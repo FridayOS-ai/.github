@@ -6,6 +6,10 @@ companyos-ff's hubstaff-weekly-clickup.yml: POST .../chat/channels/{id}/messages
 Authorization header carries the raw token (NOT "Bearer "), content_format text/md.
 Workspace id + FridayOS-Dev channel id below are non-secret config (see
 fridayos-hub/tools/clickup/channels.sh, which documents them as safe to commit).
+The channel id is overridable via CLICKUP_CHANNEL_ID (defaults to FridayOS-Dev)
+so a future caller can route to a different channel without a code change;
+the workspace id is not exposed as a variable -- there is only one FridayOS
+ClickUp workspace, so making it configurable would just add an unused knob.
 
 Token comes from 1Password, not a static GitHub secret: the calling workflow
 resolves op://Friday/ClickUP-WL-API/credential via 1password/load-secrets-action
@@ -24,7 +28,8 @@ this script bolds the author's name instead and does not claim to mention them.
 Flagged in WO-1536's Notes as a follow-up, not silently shipped as "done".
 
 Usage: python report.py stale_branches.json
-Env: CLICKUP_FRIDAY_TOKEN (required unless DRY_RUN=true), DRY_RUN=true|false
+Env: CLICKUP_FRIDAY_TOKEN (required unless DRY_RUN=true), DRY_RUN=true|false,
+     CLICKUP_CHANNEL_ID (optional, defaults to FridayOS-Dev)
 """
 import json
 import os
@@ -32,9 +37,8 @@ import sys
 import urllib.error
 import urllib.request
 
-WORKSPACE_ID = "9018051827"
-CHANNEL_ID = "8cr937k-450598"  # FridayOS-Dev
-API_URL = f"https://api.clickup.com/api/v3/workspaces/{WORKSPACE_ID}/chat/channels/{CHANNEL_ID}/messages"
+WORKSPACE_ID = "9018051827"  # the one FridayOS ClickUp workspace -- not configurable
+DEFAULT_CHANNEL_ID = "8cr937k-450598"  # FridayOS-Dev
 
 
 def format_report(branches):
@@ -68,10 +72,11 @@ def format_report(branches):
     return "\n".join(lines)
 
 
-def post(content, token):
+def post(content, token, channel_id):
+    api_url = f"https://api.clickup.com/api/v3/workspaces/{WORKSPACE_ID}/chat/channels/{channel_id}/messages"
     payload = json.dumps({"type": "message", "content": content, "content_format": "text/md"}).encode()
     req = urllib.request.Request(
-        API_URL,
+        api_url,
         data=payload,
         method="POST",
         headers={"Authorization": token, "Content-Type": "application/json"},
@@ -103,8 +108,9 @@ def main():
     if not token:
         sys.exit("CLICKUP_FRIDAY_TOKEN not set and DRY_RUN is not true — cannot deliver.")
 
-    status = post(content, token)
-    print(f"Posted to FridayOS-Dev (HTTP {status}).")
+    channel_id = os.environ.get("CLICKUP_CHANNEL_ID") or DEFAULT_CHANNEL_ID
+    status = post(content, token, channel_id)
+    print(f"Posted to channel {channel_id} (HTTP {status}).")
 
 
 if __name__ == "__main__":

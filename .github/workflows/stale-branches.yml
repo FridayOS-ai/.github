@@ -13,15 +13,18 @@ name: Stale Branch Report
 #       with:
 #         stale_days: ${{ vars.STALE_BRANCH_STALE_DAYS || 30 }}
 #         escalate_days: ${{ vars.STALE_BRANCH_ESCALATE_DAYS || 60 }}
+#         clickup_channel_id: ${{ vars.STALE_BRANCH_CHANNEL_ID || '8cr937k-450598' }}
 #         protected_globs: "main,dev"
 #       secrets:
 #         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 #
-# stale_days / escalate_days: tune per-caller via the repo (or org) Actions
-# variables STALE_BRANCH_STALE_DAYS / STALE_BRANCH_ESCALATE_DAYS -- no code
-# change needed. Set once at the org level to change the default everywhere;
-# set on a specific repo to override just that one. The `|| 30` / `|| 60`
-# fallback keeps this working even if the variable is never set.
+# stale_days / escalate_days / clickup_channel_id: tune per-caller via the
+# repo (or org) Actions variables STALE_BRANCH_STALE_DAYS /
+# STALE_BRANCH_ESCALATE_DAYS / STALE_BRANCH_CHANNEL_ID -- no code change
+# needed. Set once at the org level to change the default everywhere; set on
+# a specific repo to override just that one. The `|| ...` fallback keeps
+# this working even if a variable is never set. The ClickUp workspace id is
+# NOT exposed as a variable -- there is only one FridayOS workspace.
 #
 # The ClickUp token itself is never a static secret in any repo -- this job
 # resolves op://Friday/ClickUP-WL-API/credential from 1Password at runtime via
@@ -44,6 +47,10 @@ on:
         description: 'Comma-separated glob patterns; the repo default branch is always protected too'
         type: string
         default: "main,dev,release/*,hotfix/*"
+      clickup_channel_id:
+        description: 'ClickUp channel id to post the report to'
+        type: string
+        default: "8cr937k-450598"  # FridayOS-Dev
       dry_run:
         type: boolean
         default: false
@@ -99,5 +106,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ inputs.dry_run }}
+          CLICKUP_CHANNEL_ID: ${{ inputs.clickup_channel_id }}
         run: |
           python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json | tee -a "$GITHUB_STEP_SUMMARY"
