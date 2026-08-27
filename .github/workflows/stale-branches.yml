@@ -11,9 +11,17 @@ name: Stale Branch Report
 #     stale:
 #       uses: FridayOS-ai/.github/.github/workflows/stale-branches.yml@main
 #       with:
+#         stale_days: ${{ vars.STALE_BRANCH_STALE_DAYS || 30 }}
+#         escalate_days: ${{ vars.STALE_BRANCH_ESCALATE_DAYS || 60 }}
 #         protected_globs: "main,dev"
 #       secrets:
 #         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+#
+# stale_days / escalate_days: tune per-caller via the repo (or org) Actions
+# variables STALE_BRANCH_STALE_DAYS / STALE_BRANCH_ESCALATE_DAYS -- no code
+# change needed. Set once at the org level to change the default everywhere;
+# set on a specific repo to override just that one. The `|| 30` / `|| 60`
+# fallback keeps this working even if the variable is never set.
 #
 # The ClickUp token itself is never a static secret in any repo -- this job
 # resolves op://Friday/ClickUP-WL-API/credential from 1Password at runtime via
