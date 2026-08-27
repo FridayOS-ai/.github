@@ -7,6 +7,13 @@ Authorization header carries the raw token (NOT "Bearer "), content_format text/
 Workspace id + FridayOS-Dev channel id below are non-secret config (see
 fridayos-hub/tools/clickup/channels.sh, which documents them as safe to commit).
 
+Token comes from 1Password, not a static GitHub secret: the calling workflow
+resolves op://Friday/ClickUP-WL-API/credential via 1password/load-secrets-action
+and exports it as CLICKUP_FRIDAY_TOKEN -- the same pattern already used by
+qa-nightly.yml and fridayos-hub/tools/clickup/send.sh (which checks this exact
+env var first). Single source of truth for rotation; no static copy of the
+token lives in any repo's secret store.
+
 KNOWN GAP: the approved decision (2026-08-27) calls for @-mentioning the author of
 each escalated (>=60d) branch. ClickUp mentions need a structured reference to a
 ClickUp *user id*, and nothing in this org's tooling maps a git/GitHub author name
@@ -17,7 +24,7 @@ this script bolds the author's name instead and does not claim to mention them.
 Flagged in WO-1536's Notes as a follow-up, not silently shipped as "done".
 
 Usage: python report.py stale_branches.json
-Env: CLICKUP_API_KEY (required unless DRY_RUN=true), DRY_RUN=true|false
+Env: CLICKUP_FRIDAY_TOKEN (required unless DRY_RUN=true), DRY_RUN=true|false
 """
 import json
 import os
@@ -92,9 +99,9 @@ def main():
         print(content)
         return
 
-    token = os.environ.get("CLICKUP_API_KEY")
+    token = os.environ.get("CLICKUP_FRIDAY_TOKEN")
     if not token:
-        sys.exit("CLICKUP_API_KEY not set and DRY_RUN is not true — cannot deliver.")
+        sys.exit("CLICKUP_FRIDAY_TOKEN not set and DRY_RUN is not true — cannot deliver.")
 
     status = post(content, token)
     print(f"Posted to FridayOS-Dev (HTTP {status}).")

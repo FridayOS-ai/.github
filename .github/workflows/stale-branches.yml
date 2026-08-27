@@ -13,7 +13,12 @@ name: Stale Branch Report
 #       with:
 #         protected_globs: "main,dev"
 #       secrets:
-#         CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
+#         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+#
+# The ClickUp token itself is never a static secret in any repo -- this job
+# resolves op://Friday/ClickUP-WL-API/credential from 1Password at runtime via
+# OP_SERVICE_ACCOUNT_TOKEN, same pattern as qa-nightly.yml and
+# fridayos-hub/tools/clickup/send.sh (single source of truth for rotation).
 #
 # Origin: fridayos-hub 08-artifacts/explorations/Gayans-work/2026-07-23-git-branch-cleanup-automation.
 # Filed as WO-1535 (this workflow + scan.py) and WO-1536 (report.py + ClickUp delivery).
@@ -35,7 +40,7 @@ on:
         type: boolean
         default: false
     secrets:
-      CLICKUP_API_KEY:
+      OP_SERVICE_ACCOUNT_TOKEN:
         required: false  # not required when dry_run is true
 
 jobs:
@@ -74,10 +79,17 @@ jobs:
           echo "Found $count stale/escalate branch(es)."
           cat stale_branches.json >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Load ClickUp token from 1Password
+        if: ${{ !inputs.dry_run }}
+        uses: 1password/load-secrets-action@v4
+        with: { export-env: true }
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLICKUP_FRIDAY_TOKEN: op://Friday/ClickUP-WL-API/credential
+
       - name: Build + deliver report
         env:
           GH_TOKEN: ${{ github.token }}
-          CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json | tee -a "$GITHUB_STEP_SUMMARY"
