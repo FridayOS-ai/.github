@@ -1,0 +1,111 @@
+name: Stale Branch Report
+
+# Reusable workflow (org-wide): scans the calling repo's remote branches for
+# stale/abandoned work and posts a weekly report to FridayOS-Dev on ClickUp.
+# Report-only — never deletes anything. Merged branches are excluded here on
+# purpose; they're handled separately by each repo's native auto-delete-on-merge
+# setting + the one-time backfill sweep, not by this job.
+#
+# Called from a thin per-repo caller, e.g.:
+#   jobs:
+#     stale:
+#       uses: FridayOS-ai/.github/.github/workflows/stale-branches.yml@main
+#       with:
+#         stale_days: ${{ vars.STALE_BRANCH_STALE_DAYS || 30 }}
+#         escalate_days: ${{ vars.STALE_BRANCH_ESCALATE_DAYS || 60 }}
+#         clickup_channel_id: ${{ vars.STALE_BRANCH_CHANNEL_ID || '8cr937k-450598' }}
+#         protected_globs: "main,dev"
+#       secrets:
+#         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+#
+# stale_days / escalate_days / clickup_channel_id: tune per-caller via the
+# repo (or org) Actions variables STALE_BRANCH_STALE_DAYS /
+# STALE_BRANCH_ESCALATE_DAYS / STALE_BRANCH_CHANNEL_ID -- no code change
+# needed. Set once at the org level to change the default everywhere; set on
+# a specific repo to override just that one. The `|| ...` fallback keeps
+# this working even if a variable is never set. The ClickUp workspace id is
+# NOT exposed as a variable -- there is only one FridayOS workspace.
+#
+# The ClickUp token itself is never a static secret in any repo -- this job
+# resolves op://Friday/ClickUP-WL-API/credential from 1Password at runtime via
+# OP_SERVICE_ACCOUNT_TOKEN, same pattern as qa-nightly.yml and
+# fridayos-hub/tools/clickup/send.sh (single source of truth for rotation).
+#
+# Origin: fridayos-hub 08-artifacts/explorations/Gayans-work/2026-07-23-git-branch-cleanup-automation.
+# Filed as WO-1535 (this workflow + scan.py) and WO-1536 (report.py + ClickUp delivery).
+
+on:
+  workflow_call:
+    inputs:
+      stale_days:
+        type: number
+        default: 30
+      escalate_days:
+        type: number
+        default: 60
+      protected_globs:
+        description: 'Comma-separated glob patterns; the repo default branch is always protected too'
+        type: string
+        default: "main,dev,release/*,hotfix/*"
+      clickup_channel_id:
+        description: 'ClickUp channel id to post the report to'
+        type: string
+        default: "8cr937k-450598"  # FridayOS-Dev
+      dry_run:
+        type: boolean
+        default: false
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: false  # not required when dry_run is true
+
+jobs:
+  scan-and-report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout target repo (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout stale-branches tooling
+        uses: actions/checkout@v4
+        with:
+          repository: FridayOS-ai/.github
+          path: .stale-branches-tooling
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Scan for stale branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+          ESCALATE_DAYS: ${{ inputs.escalate_days }}
+          PROTECTED_GLOBS: ${{ inputs.protected_globs }}
+        run: python .stale-branches-tooling/scripts/stale_branches/scan.py > stale_branches.json
+
+      - name: Show scan summary
+        run: |
+          count=$(python -c "import json; print(len(json.load(open('stale_branches.json'))))")
+          echo "Found $count stale/escalate branch(es)."
+          cat stale_branches.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Load ClickUp token from 1Password
+        if: ${{ !inputs.dry_run }}
+        uses: 1password/load-secrets-action@v4
+        with: { export-env: true }
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLICKUP_FRIDAY_TOKEN: op://Friday/ClickUP-WL-API/credential
+
+      - name: Build + deliver report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CLICKUP_CHANNEL_ID: ${{ inputs.clickup_channel_id }}
+        run: |
+          python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json | tee -a "$GITHUB_STEP_SUMMARY"
