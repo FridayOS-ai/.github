@@ -42,13 +42,18 @@ DEFAULT_CHANNEL_ID = "8cr937k-450598"  # FridayOS-Dev
 
 
 def format_report(branches):
+    # GITHUB_REPOSITORY is "owner/repo"; show just the repo name so a channel
+    # receiving reports from several repos can tell them apart.
+    repo = os.environ.get("GITHUB_REPOSITORY", "").split("/")[-1]
+    suffix = f" — {repo}" if repo else ""
+
     if not branches:
-        return "✅ No stale branches this week.\n\n*Sent from FridayOS*"
+        return f"✅ No stale branches this week{suffix}.\n\n*Sent from FridayOS*"
 
     escalate = [b for b in branches if b["tier"] == "escalate"]
     stale = [b for b in branches if b["tier"] == "stale"]
 
-    lines = ["**Weekly stale-branch report**", ""]
+    lines = [f"**Weekly stale-branch report{suffix}**", ""]
 
     def render_section(title, rows):
         out = [f"**{title}**", ""]
