@@ -11,8 +11,8 @@ name: Stale Branch Report
 #     stale:
 #       uses: FridayOS-ai/.github/.github/workflows/stale-branches.yml@main
 #       with:
-#         stale_days: ${{ vars.STALE_BRANCH_STALE_DAYS || 30 }}
-#         escalate_days: ${{ vars.STALE_BRANCH_ESCALATE_DAYS || 60 }}
+#         stale_days: ${{ fromJSON(vars.STALE_BRANCH_STALE_DAYS || '30') }}
+#         escalate_days: ${{ fromJSON(vars.STALE_BRANCH_ESCALATE_DAYS || '60') }}
 #         clickup_channel_id: ${{ vars.STALE_BRANCH_CHANNEL_ID || '8cr937k-450598' }}
 #         protected_globs: "main,dev"
 #       secrets:
