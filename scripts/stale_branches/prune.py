@@ -15,7 +15,8 @@ Two runs per deletion, so nobody loses a branch without a week's notice in Click
              - its tip is the exact commit that was announced.
            A push, a new PR, a merge or a keep-list entry in between spares it. With no announcement to
            act on (the first run after enabling, or the artifact expired) it deletes
-           nothing and only announces.
+           nothing and only announces. A manual dispatch never deletes either: the report
+           promised the next weekly run.
 
 Nothing is lost: each branch is copied to an `archive/<branch>` tag and deleted in
 one atomic push, with a lease on the announced commit, so both happen or neither
@@ -24,7 +25,8 @@ does, and a branch that moved in the meantime is left alone. Restore with:
     git push origin archive/<branch>:refs/heads/<branch>
 
 Usage: python prune.py stale_branches.json > deletions.json
-Env: DRY_RUN=true|false, GITHUB_REPOSITORY, GITHUB_RUN_ID, GH_TOKEN (needs actions:read
+Env: DRY_RUN=true|false, GITHUB_EVENT_NAME (only "schedule" deletes; unset counts as
+     scheduled, for tests), GITHUB_REPOSITORY, GITHUB_RUN_ID, GH_TOKEN (needs actions:read
      to find the previous run, contents:write to push), STALE_BRANCHES_NOW (testing).
      PREVIOUS_ANNOUNCEMENT=<path> reads that file instead of the previous run's artifact.
 Output: {"announced_at", "dry_run", "deleted", "failed", "announced"}; "announced" is
@@ -155,8 +157,15 @@ def main():
     dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
     now = int(os.environ.get("STALE_BRANCHES_NOW", "") or time.time())
 
+    event = os.environ.get("GITHUB_EVENT_NAME", "schedule")
+    if event == "schedule":
+        due = due_for_deletion(previous_announcement(), current, now)
+    else:
+        log(f"Triggered by {event}, not the weekly schedule; deleting nothing, only announcing.")
+        due = []
+
     deleted, failed = [], []
-    for b in due_for_deletion(previous_announcement(), current, now):
+    for b in due:
         tag, error = archive_and_delete(b["branch"], b["sha"], dry_run)
         if error:
             log(f"Could not delete {b['branch']}: {error}")

@@ -70,6 +70,8 @@ def format_report(branches, deletions=None):
         out = [f"**{title}**", ""]
         for b in rows:
             pr_part = f" — [PR]({b['pr_url']})" if b.get("pr_url") else ""
+            if b.get("base_of_pr"):
+                pr_part += f" — [PR into it]({b['base_of_pr']})"
             author = b["created_by"] if b["tier"] == "stale" else f"**{b['created_by']}**"
             row = (
                 f"- `{b['branch']}`{pr_part} — created by {author}, "
@@ -93,11 +95,15 @@ def format_report(branches, deletions=None):
         lines += render_section(
             f"🗑️ {verb}, archived as tags",
             deletions["deleted"],
-            "Restore one with `git fetch origin tag archive/<branch>` then "
-            "`git push origin archive/<branch>:refs/heads/<branch>`.",
+            "Restore one with `git fetch origin tag <tag>` then `git push origin <tag>:refs/heads/<branch>`, "
+            "using the tag on its row. A restored branch is as idle as before: push a commit to it, open a PR "
+            "from it, or add it to `STALE_BRANCH_KEEP`, or it is announced again.",
         )
     if deletions["failed"]:
-        lines += render_section("⚠️ Not deleted (see the run log)", deletions["failed"])
+        lines += render_section(
+            "⚠️ Not deleted this run (see the run log); retried on the next weekly run if unchanged",
+            deletions["failed"],
+        )
     if next_run:
         lines += render_section(
             f"⏳ Deleted on the next weekly run (≥{delete_days}d, no open PR)",
@@ -155,6 +161,9 @@ def main():
         sys.exit("CLICKUP_FRIDAY_TOKEN not set and DRY_RUN is not true — cannot deliver.")
 
     channel_id = os.environ.get("CLICKUP_CHANNEL_ID") or DEFAULT_CHANNEL_ID
+    # Printed first so the run summary keeps the report, deletions included, even if
+    # the post below fails.
+    print(content)
     status = post(content, token, channel_id)
     print(f"Posted to channel {channel_id} (HTTP {status}).")
 

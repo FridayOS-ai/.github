@@ -118,13 +118,8 @@ jobs:
           echo "Found $count stale/escalate branch(es)."
           cat stale_branches.json >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Delete branches the previous run announced
-        if: ${{ inputs.delete_days > 0 }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: python .stale-branches-tooling/scripts/stale_branches/prune.py stale_branches.json > deletions.json
-
+      # Before any deletion, so a 1Password failure stops the run while nothing is
+      # deleted yet. prune.py deletes only on the weekly schedule.
       - name: Load ClickUp token from 1Password
         if: ${{ !inputs.dry_run }}
         uses: 1password/load-secrets-action@v4
@@ -132,6 +127,13 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLICKUP_FRIDAY_TOKEN: op://Friday/ClickUP-WL-API/credential
+
+      - name: Delete branches the previous run announced
+        if: ${{ inputs.delete_days > 0 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: python .stale-branches-tooling/scripts/stale_branches/prune.py stale_branches.json > deletions.json
 
       - name: Build + deliver report
         # Explicit bash adds pipefail, so a failed ClickUp post fails the run
