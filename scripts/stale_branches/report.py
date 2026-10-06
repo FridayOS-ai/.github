@@ -27,9 +27,11 @@ Faking a plain "@name" string would not trigger a real ClickUp notification, so
 this script bolds the author's name instead and does not claim to mention them.
 Flagged in WO-1536's Notes as a follow-up, not silently shipped as "done".
 
-Usage: python report.py stale_branches.json
+Usage: python report.py stale_branches.json [deletions.json]
+       (deletions.json is prune.py's output; pass it when deletion is on)
 Env: CLICKUP_FRIDAY_TOKEN (required unless DRY_RUN=true), DRY_RUN=true|false,
-     CLICKUP_CHANNEL_ID (optional, defaults to FridayOS-Dev)
+     CLICKUP_CHANNEL_ID (optional, defaults to FridayOS-Dev),
+     STALE_DAYS / ESCALATE_DAYS / DELETE_DAYS (section headings only)
 """
 import json
 import os
@@ -41,37 +43,78 @@ WORKSPACE_ID = "9018051827"  # the one FridayOS ClickUp workspace -- not configu
 DEFAULT_CHANNEL_ID = "8cr937k-450598"  # FridayOS-Dev
 
 
-def format_report(branches):
+def format_report(branches, deletions=None):
     # GITHUB_REPOSITORY is "owner/repo"; show just the repo name so a channel
     # receiving reports from several repos can tell them apart.
     repo = os.environ.get("GITHUB_REPOSITORY", "").split("/")[-1]
     suffix = f" — {repo}" if repo else ""
+    stale_days = os.environ.get("STALE_DAYS") or "30"
+    escalate_days = os.environ.get("ESCALATE_DAYS") or "60"
+    delete_days = os.environ.get("DELETE_DAYS") or "70"
 
     if not branches:
         return f"✅ No stale branches this week{suffix}.\n\n*Sent from FridayOS*"
 
+    deletions = deletions or {"deleted": [], "failed": [], "announced": []}
+    # A failed deletion stays announced so prune.py can retry it, but this report
+    # already lists it under "Not deleted"; don't promise it for next week too.
+    failed = {b["branch"] for b in deletions["failed"]}
+    announced = {b["branch"] for b in deletions["announced"]} - failed
+    next_run = [b for b in branches if b["branch"] in announced]
     escalate = [b for b in branches if b["tier"] == "escalate"]
     stale = [b for b in branches if b["tier"] == "stale"]
 
     lines = [f"**Weekly stale-branch report{suffix}**", ""]
 
-    def render_section(title, rows):
+    def render_section(title, rows, footer=None):
         out = [f"**{title}**", ""]
         for b in rows:
             pr_part = f" — [PR]({b['pr_url']})" if b.get("pr_url") else ""
-            author = f"**{b['created_by']}**" if b["tier"] == "escalate" else b["created_by"]
-            out.append(
+            if b.get("base_of_pr"):
+                pr_part += f" — [PR into it]({b['base_of_pr']})"
+            author = b["created_by"] if b["tier"] == "stale" else f"**{b['created_by']}**"
+            row = (
                 f"- `{b['branch']}`{pr_part} — created by {author}, "
                 f"last activity {b['last_activity']} by {b['last_activity_by']} "
                 f"({b['age_days']}d idle)"
             )
+            if b.get("kept"):
+                row += " — kept"
+            if b.get("error"):
+                row += f" — {b['error']}"
+            elif b.get("archive_tag"):
+                row += f" → `{b['archive_tag']}`"
+            out.append(row)
+        if footer:
+            out += ["", footer]
         out.append("")
         return out
 
+    if deletions["deleted"]:
+        verb = "Would delete (dry run)" if deletions.get("dry_run") else "Deleted this run"
+        lines += render_section(
+            f"🗑️ {verb}, archived as tags",
+            deletions["deleted"],
+            "Restore one with `git fetch origin tag <tag>` then `git push origin <tag>:refs/heads/<branch>`, "
+            "using the tag on its row. A restored branch is as idle as before: push a commit to it, open a PR "
+            "from it, or add it to `STALE_BRANCH_KEEP`, or it is announced again.",
+        )
+    if deletions["failed"]:
+        lines += render_section(
+            "⚠️ Not deleted this run (see the run log); retried on the next weekly run if unchanged",
+            deletions["failed"],
+        )
+    if next_run:
+        lines += render_section(
+            f"⏳ Deleted on the next weekly run (≥{delete_days}d, no open PR)",
+            next_run,
+            "To keep one, push a commit to it, open a PR from it, or add it to the repo's "
+            "`STALE_BRANCH_KEEP` variable before then.",
+        )
     if escalate:
-        lines += render_section("🔴 Escalate (≥60d)", escalate)
+        lines += render_section(f"🔴 Escalate (≥{escalate_days}d)", escalate)
     if stale:
-        lines += render_section("🟡 Stale (≥30d)", stale)
+        lines += render_section(f"🟡 Stale (≥{stale_days}d)", stale)
 
     lines.append("*Sent from FridayOS*")
     return "\n".join(lines)
@@ -95,13 +138,17 @@ def post(content, token, channel_id):
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit("usage: report.py <stale_branches.json>")
+    if len(sys.argv) not in (2, 3):
+        sys.exit("usage: report.py <stale_branches.json> [deletions.json]")
 
     with open(sys.argv[1]) as f:
         branches = json.load(f)
+    deletions = None
+    if len(sys.argv) == 3:
+        with open(sys.argv[2]) as f:
+            deletions = json.load(f)
 
-    content = format_report(branches)
+    content = format_report(branches, deletions)
     dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
 
     if dry_run:
@@ -114,6 +161,9 @@ def main():
         sys.exit("CLICKUP_FRIDAY_TOKEN not set and DRY_RUN is not true — cannot deliver.")
 
     channel_id = os.environ.get("CLICKUP_CHANNEL_ID") or DEFAULT_CHANNEL_ID
+    # Printed first so the run summary keeps the report, deletions included, even if
+    # the post below fails.
+    print(content)
     status = post(content, token, channel_id)
     print(f"Posted to channel {channel_id} (HTTP {status}).")
 

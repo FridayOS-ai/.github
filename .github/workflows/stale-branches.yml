@@ -2,9 +2,16 @@ name: Stale Branch Report
 
 # Reusable workflow (org-wide): scans the calling repo's remote branches for
 # stale/abandoned work and posts a weekly report to FridayOS-Dev on ClickUp.
-# Report-only — never deletes anything. Merged branches are excluded here on
-# purpose; they're handled separately by each repo's native auto-delete-on-merge
-# setting + the one-time backfill sweep, not by this job.
+# Merged branches are excluded here on purpose; they're handled separately by
+# each repo's native auto-delete-on-merge setting + the one-time backfill
+# sweep, not by this job.
+#
+# Deletion (off unless the caller passes delete_days > 0): an unmerged branch
+# idle for delete_days with no open PR is announced in the report as "deleted
+# on the next weekly run", and deleted by that next run only if its tip has
+# not moved since. Each deletion first copies the branch to an archive/<branch>
+# tag, in the same atomic push, so it can always be restored. The protocol is
+# in scripts/stale_branches/prune.py.
 #
 # Called from a thin per-repo caller, e.g.:
 #   jobs:
@@ -13,15 +20,19 @@ name: Stale Branch Report
 #       with:
 #         stale_days: ${{ fromJSON(vars.STALE_BRANCH_STALE_DAYS || '30') }}
 #         escalate_days: ${{ fromJSON(vars.STALE_BRANCH_ESCALATE_DAYS || '60') }}
+#         delete_days: ${{ fromJSON(vars.STALE_BRANCH_DELETE_DAYS || '70') }}
 #         clickup_channel_id: ${{ vars.STALE_BRANCH_CHANNEL_ID || '8cr937k-450598' }}
 #         protected_globs: "main,dev"
+#         keep_globs: ${{ vars.STALE_BRANCH_KEEP || '' }}
 #       secrets:
 #         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 #
-# stale_days / escalate_days / clickup_channel_id: tune per-caller via the
-# repo (or org) Actions variables STALE_BRANCH_STALE_DAYS /
-# STALE_BRANCH_ESCALATE_DAYS / STALE_BRANCH_CHANNEL_ID -- no code change
-# needed. Set once at the org level to change the default everywhere; set on
+# stale_days / escalate_days / delete_days / clickup_channel_id: tune
+# per-caller via the repo (or org) Actions variables STALE_BRANCH_STALE_DAYS /
+# STALE_BRANCH_ESCALATE_DAYS / STALE_BRANCH_DELETE_DAYS (0 turns deletion off) /
+# STALE_BRANCH_CHANNEL_ID -- no code change needed. STALE_BRANCH_KEEP holds
+# comma-separated name patterns (e.g. backup/*) for branches that stay in the
+# report but are never announced or deleted. Set once at the org level to change the default everywhere; set on
 # a specific repo to override just that one. The `|| ...` fallback keeps
 # this working even if a variable is never set. The ClickUp workspace id is
 # NOT exposed as a variable -- there is only one FridayOS workspace.
@@ -30,6 +41,12 @@ name: Stale Branch Report
 # resolves op://Friday/ClickUP-WL-API/credential from 1Password at runtime via
 # OP_SERVICE_ACCOUNT_TOKEN, same pattern as qa-nightly.yml and
 # fridayos-hub/tools/clickup/send.sh (single source of truth for rotation).
+#
+# Token permissions are inherited from the caller (the job sets none), so a
+# report-only caller keeps granting just contents:read + pull-requests:read.
+# A caller that passes delete_days > 0 must also grant contents:write (push
+# the archive tags, delete branches) and actions:read (find the previous run's
+# announcement); without them the run fails rather than skipping deletion.
 #
 # Origin: fridayos-hub 08-artifacts/explorations/Gayans-work/2026-07-23-git-branch-cleanup-automation.
 # Filed as WO-1535 (this workflow + scan.py) and WO-1536 (report.py + ClickUp delivery).
@@ -43,10 +60,18 @@ on:
       escalate_days:
         type: number
         default: 60
+      delete_days:
+        description: 'Idle days before an unmerged branch with no open PR is announced, then deleted (archived as a tag) on the following run. 0 disables deletion.'
+        type: number
+        default: 0
       protected_globs:
         description: 'Comma-separated glob patterns; the repo default branch is always protected too'
         type: string
         default: "main,dev,release/*,hotfix/*"
+      keep_globs:
+        description: 'Comma-separated glob patterns for branches that stay in the report, marked kept, but are never announced or deleted'
+        type: string
+        default: ""
       clickup_channel_id:
         description: 'ClickUp channel id to post the report to'
         type: string
@@ -61,9 +86,6 @@ on:
 jobs:
   scan-and-report:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     steps:
       - name: Checkout target repo (full history)
         uses: actions/checkout@v4
@@ -85,7 +107,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           STALE_DAYS: ${{ inputs.stale_days }}
           ESCALATE_DAYS: ${{ inputs.escalate_days }}
+          DELETE_DAYS: ${{ inputs.delete_days }}
           PROTECTED_GLOBS: ${{ inputs.protected_globs }}
+          KEEP_GLOBS: ${{ inputs.keep_globs }}
         run: python .stale-branches-tooling/scripts/stale_branches/scan.py > stale_branches.json
 
       - name: Show scan summary
@@ -94,6 +118,8 @@ jobs:
           echo "Found $count stale/escalate branch(es)."
           cat stale_branches.json >> "$GITHUB_STEP_SUMMARY"
 
+      # Before any deletion, so a 1Password failure stops the run while nothing is
+      # deleted yet. prune.py deletes only on the weekly schedule.
       - name: Load ClickUp token from 1Password
         if: ${{ !inputs.dry_run }}
         uses: 1password/load-secrets-action@v4
@@ -102,10 +128,34 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLICKUP_FRIDAY_TOKEN: op://Friday/ClickUP-WL-API/credential
 
+      - name: Delete branches the previous run announced
+        if: ${{ inputs.delete_days > 0 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: python .stale-branches-tooling/scripts/stale_branches/prune.py stale_branches.json > deletions.json
+
       - name: Build + deliver report
+        # Explicit bash adds pipefail, so a failed ClickUp post fails the run
+        # instead of being masked by tee. The next run treats only a successful
+        # run's announcement as notice given.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ inputs.dry_run }}
           CLICKUP_CHANNEL_ID: ${{ inputs.clickup_channel_id }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+          ESCALATE_DAYS: ${{ inputs.escalate_days }}
+          DELETE_DAYS: ${{ inputs.delete_days }}
         run: |
-          python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json | tee -a "$GITHUB_STEP_SUMMARY"
+          deletions=()
+          if [ -f deletions.json ]; then deletions=(deletions.json); fi
+          python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json "${deletions[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save this run's announcement for the next run
+        if: ${{ inputs.delete_days > 0 && !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stale-branch-deletions  # prune.py's ARTIFACT
+          path: deletions.json
+          retention-days: 35
