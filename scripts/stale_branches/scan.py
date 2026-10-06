@@ -6,7 +6,12 @@ Standalone by design (WO-1535's AC): no ClickUp dependency, no network calls bey
 Run from a checkout with `fetch-depth: 0` so merge status and commit history are real,
 not paginated API calls.
 
-Usage: STALE_DAYS=30 ESCALATE_DAYS=60 PROTECTED_GLOBS="main,dev,release/*,hotfix/*" \
+DELETE_DAYS (0 = off) adds a third tier, "delete": idle at least that long and no open
+PR. scan.py only labels them; prune.py deletes them a run later, after the report has
+announced them. Because an open PR is what spares a branch from that tier, a failed
+open-PR lookup is fatal when DELETE_DAYS is set instead of reading as "no PR".
+
+Usage: STALE_DAYS=30 ESCALATE_DAYS=60 DELETE_DAYS=70 PROTECTED_GLOBS="main,dev,release/*,hotfix/*" \
        python scan.py > stale_branches.json
 """
 import fnmatch
@@ -59,10 +64,12 @@ def branch_created_by(default_branch, name, fallback_author):
     return name_out if ok and name_out else fallback_author
 
 
-def open_pr_for(name):
+def open_pr_for(name, strict=False):
     ok, out = run_ok(
         ["gh", "pr", "list", "--head", name, "--state", "open", "--json", "number,url,author"]
     )
+    if not ok and strict:
+        sys.exit(f"open-PR lookup failed for {name!r}; refusing to mark branches for deletion blind.")
     if not ok or not out.strip():
         return None, None
     try:
@@ -78,6 +85,7 @@ def open_pr_for(name):
 def main():
     stale_days = int(os.environ.get("STALE_DAYS", "30"))
     escalate_days = int(os.environ.get("ESCALATE_DAYS", "60"))
+    delete_days = int(os.environ.get("DELETE_DAYS", "") or 0)
     protected_globs = [
         g.strip() for g in os.environ.get("PROTECTED_GLOBS", "main,dev,release/*,hotfix/*").split(",") if g.strip()
     ]
@@ -89,7 +97,7 @@ def main():
         [
             "git",
             "for-each-ref",
-            "--format=%(refname:short)|%(committerdate:unix)|%(authorname)",
+            "--format=%(refname:short)|%(objectname)|%(committerdate:unix)|%(authorname)",
             "refs/remotes/origin",
         ]
     ).splitlines()
@@ -98,11 +106,11 @@ def main():
     for line in ref_lines:
         if not line.strip() or "|" not in line:
             continue
-        ref, ts, author = line.split("|", 2)
+        ref, sha, ts, author = line.split("|", 3)
         if not ref.startswith("origin/") or ref == "origin/HEAD":
             continue
         name = ref[len("origin/"):]
-        branches[name] = {"committer_ts": int(ts), "last_author": author}
+        branches[name] = {"sha": sha, "committer_ts": int(ts), "last_author": author}
 
     candidates = {n: v for n, v in branches.items() if not is_protected(n, default_branch, protected_globs)}
 
@@ -120,14 +128,20 @@ def main():
         age_days = (now - info["committer_ts"]) // 86400
         if age_days < stale_days:
             continue
-        tier = "escalate" if age_days >= escalate_days else "stale"
 
-        pr_url, pr_author = open_pr_for(name)
+        pr_url, pr_author = open_pr_for(name, strict=delete_days > 0)
+        if delete_days and age_days >= delete_days and not pr_url:
+            tier = "delete"
+        elif age_days >= escalate_days:
+            tier = "escalate"
+        else:
+            tier = "stale"
         created_by = pr_author or branch_created_by(default_branch, name, info["last_author"])
 
         results.append(
             {
                 "branch": name,
+                "sha": info["sha"],
                 "created_by": created_by,
                 "last_activity": time.strftime("%Y-%m-%d", time.gmtime(info["committer_ts"])),
                 "last_activity_by": info["last_author"],
