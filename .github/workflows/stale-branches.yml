@@ -23,13 +23,16 @@ name: Stale Branch Report
 #         delete_days: ${{ fromJSON(vars.STALE_BRANCH_DELETE_DAYS || '70') }}
 #         clickup_channel_id: ${{ vars.STALE_BRANCH_CHANNEL_ID || '8cr937k-450598' }}
 #         protected_globs: "main,dev"
+#         keep_globs: ${{ vars.STALE_BRANCH_KEEP || '' }}
 #       secrets:
 #         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
 #
 # stale_days / escalate_days / delete_days / clickup_channel_id: tune
 # per-caller via the repo (or org) Actions variables STALE_BRANCH_STALE_DAYS /
 # STALE_BRANCH_ESCALATE_DAYS / STALE_BRANCH_DELETE_DAYS (0 turns deletion off) /
-# STALE_BRANCH_CHANNEL_ID -- no code change needed. Set once at the org level to change the default everywhere; set on
+# STALE_BRANCH_CHANNEL_ID -- no code change needed. STALE_BRANCH_KEEP holds
+# comma-separated name patterns (e.g. backup/*) for branches that stay in the
+# report but are never announced or deleted. Set once at the org level to change the default everywhere; set on
 # a specific repo to override just that one. The `|| ...` fallback keeps
 # this working even if a variable is never set. The ClickUp workspace id is
 # NOT exposed as a variable -- there is only one FridayOS workspace.
@@ -65,6 +68,10 @@ on:
         description: 'Comma-separated glob patterns; the repo default branch is always protected too'
         type: string
         default: "main,dev,release/*,hotfix/*"
+      keep_globs:
+        description: 'Comma-separated glob patterns for branches that stay in the report, marked kept, but are never announced or deleted'
+        type: string
+        default: ""
       clickup_channel_id:
         description: 'ClickUp channel id to post the report to'
         type: string
@@ -102,6 +109,7 @@ jobs:
           ESCALATE_DAYS: ${{ inputs.escalate_days }}
           DELETE_DAYS: ${{ inputs.delete_days }}
           PROTECTED_GLOBS: ${{ inputs.protected_globs }}
+          KEEP_GLOBS: ${{ inputs.keep_globs }}
         run: python .stale-branches-tooling/scripts/stale_branches/scan.py > stale_branches.json
 
       - name: Show scan summary

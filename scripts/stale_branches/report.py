@@ -76,6 +76,8 @@ def format_report(branches, deletions=None):
                 f"last activity {b['last_activity']} by {b['last_activity_by']} "
                 f"({b['age_days']}d idle)"
             )
+            if b.get("kept"):
+                row += " — kept"
             if b.get("error"):
                 row += f" — {b['error']}"
             elif b.get("archive_tag"):
@@ -100,7 +102,8 @@ def format_report(branches, deletions=None):
         lines += render_section(
             f"⏳ Deleted on the next weekly run (≥{delete_days}d, no open PR)",
             next_run,
-            "To keep one, push a commit to it or open a PR from it before then.",
+            "To keep one, push a commit to it, open a PR from it, or add it to the repo's "
+            "`STALE_BRANCH_KEEP` variable before then.",
         )
     if escalate:
         lines += render_section(f"🔴 Escalate (≥{escalate_days}d)", escalate)

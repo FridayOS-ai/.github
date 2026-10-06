@@ -11,9 +11,9 @@ Two runs per deletion, so nobody loses a branch without a week's notice in Click
                runs are the ones that post; a manual dispatch never counts as notice),
              - that announcement is at least MIN_NOTICE_DAYS old,
              - this run's scan still has it in the "delete" tier (still idle, no open
-               PR, not merged, not protected), and
+               PR, not merged, not protected, not on the keep list), and
              - its tip is the exact commit that was announced.
-           A push, a new PR or a merge in between spares it. With no announcement to
+           A push, a new PR, a merge or a keep-list entry in between spares it. With no announcement to
            act on (the first run after enabling, or the artifact expired) it deletes
            nothing and only announces.
 
@@ -99,7 +99,7 @@ def due_for_deletion(previous, current, now):
     for old in previous["announced"]:
         new = now_doomed.get(old["branch"])
         if new is None:
-            log(f"Spared {old['branch']}: gone, merged, has an open PR, or no longer idle enough.")
+            log(f"Spared {old['branch']}: gone, merged, kept, has an open PR, or no longer idle enough.")
         elif new["sha"] != old["sha"]:
             log(f"Spared {old['branch']}: tip moved {old['sha'][:7]} -> {new['sha'][:7]} since the announcement.")
         else:

@@ -8,11 +8,12 @@ not paginated API calls.
 
 DELETE_DAYS (0 = off) adds a third tier, "delete": idle at least that long and no open
 PR. scan.py only labels them; prune.py deletes them a run later, after the report has
-announced them. Because an open PR is what spares a branch from that tier, a failed
+announced them. A branch matching KEEP_GLOBS never enters that tier: it stays in the
+report, marked "kept", in the tier its age gives it. Because an open PR is what spares a branch from that tier, a failed
 open-PR lookup is fatal when DELETE_DAYS is set instead of reading as "no PR".
 
 Usage: STALE_DAYS=30 ESCALATE_DAYS=60 DELETE_DAYS=70 PROTECTED_GLOBS="main,dev,release/*,hotfix/*" \
-       python scan.py > stale_branches.json
+       KEEP_GLOBS="backup/*" python scan.py > stale_branches.json
 """
 import fnmatch
 import json
@@ -45,10 +46,12 @@ def detect_default_branch():
     return "main"
 
 
+def matches_any(name, globs):
+    return any(fnmatch.fnmatch(name, pat) for pat in globs)
+
+
 def is_protected(name, default_branch, protected_globs):
-    if name == default_branch:
-        return True
-    return any(fnmatch.fnmatch(name, pat) for pat in protected_globs)
+    return name == default_branch or matches_any(name, protected_globs)
 
 
 def branch_created_by(default_branch, name, fallback_author):
@@ -89,6 +92,7 @@ def main():
     protected_globs = [
         g.strip() for g in os.environ.get("PROTECTED_GLOBS", "main,dev,release/*,hotfix/*").split(",") if g.strip()
     ]
+    keep_globs = [g.strip() for g in os.environ.get("KEEP_GLOBS", "").split(",") if g.strip()]
     now = int(os.environ.get("STALE_BRANCHES_NOW", "") or time.time())
 
     default_branch = detect_default_branch()
@@ -130,7 +134,8 @@ def main():
             continue
 
         pr_url, pr_author = open_pr_for(name, strict=delete_days > 0)
-        if delete_days and age_days >= delete_days and not pr_url:
+        kept = matches_any(name, keep_globs)
+        if delete_days and age_days >= delete_days and not pr_url and not kept:
             tier = "delete"
         elif age_days >= escalate_days:
             tier = "escalate"
@@ -148,6 +153,7 @@ def main():
                 "age_days": age_days,
                 "tier": tier,
                 "pr_url": pr_url,
+                "kept": kept,
             }
         )
 
