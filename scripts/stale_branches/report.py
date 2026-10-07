@@ -61,8 +61,11 @@ def format_report(branches, deletions=None):
     failed = {b["branch"] for b in deletions["failed"]}
     announced = {b["branch"] for b in deletions["announced"]} - failed
     next_run = [b for b in branches if b["branch"] in announced]
-    escalate = [b for b in branches if b["tier"] == "escalate"]
-    stale = [b for b in branches if b["tier"] == "stale"]
+    # A kept branch (KEEP_GLOBS) is listed once, in its own section, so the keep
+    # list can be read at a glance; it never enters the delete tier.
+    kept = [b for b in branches if b.get("kept")]
+    escalate = [b for b in branches if b["tier"] == "escalate" and not b.get("kept")]
+    stale = [b for b in branches if b["tier"] == "stale" and not b.get("kept")]
 
     lines = [f"**Weekly stale-branch report{suffix}**", ""]
 
@@ -78,8 +81,6 @@ def format_report(branches, deletions=None):
                 f"last activity {b['last_activity']} by {b['last_activity_by']} "
                 f"({b['age_days']}d idle)"
             )
-            if b.get("kept"):
-                row += " — kept"
             if b.get("error"):
                 row += f" — {b['error']}"
             elif b.get("archive_tag"):
@@ -115,6 +116,12 @@ def format_report(branches, deletions=None):
         lines += render_section(f"🔴 Escalate (≥{escalate_days}d)", escalate)
     if stale:
         lines += render_section(f"🟡 Stale (≥{stale_days}d)", stale)
+    if kept:
+        lines += render_section(
+            "🛡️ Kept, never deleted (`STALE_BRANCH_KEEP`)",
+            kept,
+            "Remove a pattern from the repo's `STALE_BRANCH_KEEP` variable to let its branches be cleaned up again.",
+        )
 
     lines.append("*Sent from FridayOS*")
     return "\n".join(lines)

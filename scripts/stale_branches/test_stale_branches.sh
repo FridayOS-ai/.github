@@ -133,7 +133,10 @@ check "week 2 announces the rest" "races moved ages-in" "$(names '.announced[].b
 # --- report -----------------------------------------------------------------
 report=$(GITHUB_REPOSITORY=org/repo DRY_RUN=true python3 "$TOOLS/report.py" scan.json "$T/week2.json")
 check "report: deleted row shows its tag" "1" "$(grep -c '`plain`.*→ `archive/plain`' <<< "$report")"
-check "report: kept row marked kept" "1" "$(grep -c '`backup/old`.* — kept' <<< "$report")"
+check "report: kept branches listed together under Kept" "backup/old kept-later" \
+  "$(sed -n '/Kept, never deleted/,/Remove a pattern/p' <<< "$report" | grep -o '^- `[^`]*`' | sed 's/^- //; s/`//g' | paste -sd ' ')"
+check "report: Escalate lists the PR branches and no kept one" "stack-base gets-pr with-pr" \
+  "$(awk '/Escalate/{f=1; next} /^\*\*/{f=0} f' <<< "$report" | grep -o '^- `[^`]*`' | sed 's/^- //; s/`//g' | paste -sd ' ')"
 check "report: failed rows say they are retried" "1" "$(grep -c 'Not deleted this run.*retried on the next weekly run' <<< "$report")"
 check "report: restore names the row's own tag" "1" "$(grep -c 'using the tag on its row' <<< "$report")"
 check "report: refused row shows no tag" "0" "$(grep '`races`' <<< "$report" | grep -c 'archive/')"
