@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test of scan.py -> prune.py -> report.py against a throwaway bare
+# End-to-end test of scan.py -> prune.py -> merged.py -> report.py against a throwaway bare
 # repo standing in for origin, two weekly runs apart. `gh` is stubbed: the
 # open-PR listing answers from $PR_BRANCHES (PR heads) and $PR_BASES (PR bases),
 # GH_FAIL=1 makes it fail, GH_GARBAGE=1 makes it print non-JSON, and any
@@ -147,6 +147,72 @@ check "report: next-run list leaves out the refused branch" "moved ages-in" \
 git clone -q "$T/origin.git" "$T/restorer" && cd "$T/restorer" || exit 1
 git fetch -q origin tag archive/plain && git push -q origin archive/plain:refs/heads/plain
 check "restore brings the branch back at its tip" "$(remote_ref refs/tags/archive/plain)" "$(remote_ref refs/heads/plain)"
+
+# --- merged.py: branches whose work is already in the default branch ---------
+git init -q --bare -b dev "$T/morigin.git"
+git clone -q "$T/morigin.git" "$T/mwork" 2>/dev/null
+cd "$T/mwork" || exit 1
+git config user.name Tester && git config user.email tester@example.test
+commitf() { echo "$3" > "$2" && git add "$2" && GIT_AUTHOR_DATE="@$1" GIT_COMMITTER_DATE="@$1" git commit -q -m "$4"; }
+dmerge() { GIT_AUTHOR_DATE="@$NOW" GIT_COMMITTER_DATE="@$NOW" git merge -q --no-ff "$1" -m "merge $1"; }
+git checkout -q -b dev && commitf $((NOW - 200 * DAY)) base.txt base root && git push -q origin dev
+#  m-merged      merged into dev with a merge commit            -> deleted, "merged"
+#  m-cherry      its one commit cherry-picked onto dev          -> deleted, "patches in"
+#  m-squash      two commits squash-merged into dev             -> deleted, "squash-merged"
+#  m-unmerged    real work not in dev                           -> stays
+#  m-open-pr     merged, but an open PR still comes from it     -> stays
+#  m-stack-base  merged, but an open PR goes into it            -> stays
+#  keep/m-kept   merged, on the keep list                       -> stays
+#  m-race        merged, pushed to between the fetch and delete -> refused, stays
+#  m-pruned      merged, already deleted by prune.py this run   -> skipped
+#  m-fresh       cut from dev's tip just now, nothing pushed    -> stays (grace)
+for b in m-merged m-open-pr m-stack-base keep/m-kept m-race m-pruned; do
+  git checkout -q -b "$b" dev && commitf $((NOW - 10 * DAY)) "${b//\//-}.txt" "$b" "work on $b" && git push -q origin "$b"
+done
+git checkout -q -b m-cherry dev && commitf $((NOW - 10 * DAY)) cherry.txt cherry "cherry work" && git push -q origin m-cherry
+git checkout -q -b m-squash dev && commitf $((NOW - 9 * DAY)) squash.txt one "squash 1" && commitf $((NOW - 8 * DAY)) squash.txt two "squash 2" && git push -q origin m-squash
+git checkout -q -b m-unmerged dev && commitf $((NOW - 10 * DAY)) unmerged.txt u "unmerged work" && git push -q origin m-unmerged
+git checkout -q dev
+for b in m-merged m-open-pr m-stack-base keep/m-kept m-race m-pruned; do dmerge "$b"; done
+GIT_COMMITTER_DATE="@$NOW" git cherry-pick m-cherry > /dev/null
+git merge -q --squash m-squash > /dev/null 2>&1 && GIT_AUTHOR_DATE="@$NOW" GIT_COMMITTER_DATE="@$NOW" git commit -q -m "squash m-squash"
+git push -q origin dev
+git checkout -q -b m-fresh dev && git push -q origin m-fresh
+
+git clone -q "$T/morigin.git" "$T/mrun" && cd "$T/mrun" || exit 1
+(cd "$T/mwork" && git checkout -q m-race && commitf $((NOW - DAY)) race.txt late "late push" && git push -q origin m-race)
+echo '{"deleted": [{"branch": "m-pruned"}]}' > "$T/pruned.json"
+export PR_BRANCHES=m-open-pr PR_BASES=m-stack-base KEEP_GLOBS='keep/*' STALE_BRANCHES_NOW=$NOW
+DRY_RUN=true python3 "$TOOLS/merged.py" "$T/pruned.json" > "$T/mdry.json" 2>/dev/null
+check "merged dry run lists the landed branches (m-race as fetched)" "m-cherry m-merged m-race m-squash" "$(names '.deleted[].branch' "$T/mdry.json")"
+check "merged dry run deletes nothing" "$(git rev-parse origin/m-merged)" "$(git --git-dir="$T/morigin.git" rev-parse --verify -q refs/heads/m-merged)"
+python3 "$TOOLS/merged.py" "$T/pruned.json" > "$T/merged.json" 2>/dev/null
+mref() { git --git-dir="$T/morigin.git" rev-parse --verify -q "refs/heads/$1" || echo none; }
+check "merged: deletes merged, cherry-picked and squash-merged" "m-cherry:patches in m-merged:merged m-squash:squash-merged" \
+  "$(jq -r '[.deleted[] | "\(.branch):\(.how)"] | join(" ")' "$T/merged.json")"
+check "merged: they are gone" "none none none" "$(mref m-merged) $(mref m-cherry) $(mref m-squash)"
+check "merged: unmerged work stays" "$(git rev-parse origin/m-unmerged)" "$(mref m-unmerged)"
+check "merged: open PR head stays" "$(git rev-parse origin/m-open-pr)" "$(mref m-open-pr)"
+check "merged: base of an open PR stays" "$(git rev-parse origin/m-stack-base)" "$(mref m-stack-base)"
+check "merged: keep list stays" "$(git rev-parse origin/keep/m-kept)" "$(mref keep/m-kept)"
+check "merged: fresh cut inside the grace stays" "$(git rev-parse origin/m-fresh)" "$(mref m-fresh)"
+check "merged: mid-run push refused and kept" "m-race pushed to during this run, left alone" "$(jq -r '.failed[] | "\(.branch) \(.error)"' "$T/merged.json")"
+check "merged: mid-run push kept its new tip" "$(git -C "$T/mwork" rev-parse m-race)" "$(mref m-race)"
+check "merged: branch prune.py deleted is skipped" "0" "$(jq '[.deleted[], .failed[] | select(.branch == "m-pruned")] | length' "$T/merged.json")"
+MERGED_GRACE_DAYS=0 DRY_RUN=true python3 "$TOOLS/merged.py" > "$T/mgrace0.json" 2>/dev/null
+check "merged: grace 0 takes the fresh cut too" "1" "$(jq '[.deleted[] | select(.branch == "m-fresh")] | length' "$T/mgrace0.json")"
+PR_BRANCHES=m-open-pr GH_FAIL=1 python3 "$TOOLS/merged.py" > /dev/null 2>&1
+check "merged: failed PR lookup aborts" "1" "$?"
+GITHUB_REPOSITORY=org/repo python3 "$TOOLS/merged.py" > /dev/null 2>&1
+check "merged: failed default-branch lookup aborts" "1" "$?"
+mreport=$(GITHUB_REPOSITORY=org/repo DRY_RUN=true python3 "$TOOLS/report.py" "$T/run2/scan.json" "$T/week2.json" --merged "$T/merged.json")
+check "report: merged section counts the deleted" "1" "$(grep -c 'Deleted: 3 branch(es) already in `dev`' <<< "$mreport")"
+check "report: merged failure listed" "1" "$(grep -c '`m-race`: pushed to during this run' <<< "$mreport")"
+check "report: stale sections still follow" "1" "$(grep -c 'Escalate' <<< "$mreport")"
+echo '[]' > "$T/empty.json"
+mquiet=$(DRY_RUN=true python3 "$TOOLS/report.py" "$T/empty.json" --merged "$T/merged.json")
+check "report: merged deletions shown in a week with no stale branches" "1 1" \
+  "$(grep -c 'already in `dev`' <<< "$mquiet") $(grep -c 'No stale branches this week' <<< "$mquiet")"
 
 echo
 [ "$failures" -eq 0 ] && echo "all passed" || { echo "$failures failed"; exit 1; }

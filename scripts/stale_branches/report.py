@@ -27,8 +27,9 @@ Faking a plain "@name" string would not trigger a real ClickUp notification, so
 this script bolds the author's name instead and does not claim to mention them.
 Flagged in WO-1536's Notes as a follow-up, not silently shipped as "done".
 
-Usage: python report.py stale_branches.json [deletions.json]
-       (deletions.json is prune.py's output; pass it when deletion is on)
+Usage: python report.py stale_branches.json [deletions.json] [--merged merged.json]
+       (deletions.json is prune.py's output; pass it when deletion is on.
+        merged.json is merged.py's output: the merged branches deleted this run)
 Env: CLICKUP_FRIDAY_TOKEN (required unless DRY_RUN=true), DRY_RUN=true|false,
      CLICKUP_CHANNEL_ID (optional, defaults to FridayOS-Dev),
      STALE_DAYS / ESCALATE_DAYS / DELETE_DAYS (section headings only)
@@ -43,7 +44,28 @@ WORKSPACE_ID = "9018051827"  # the one FridayOS ClickUp workspace -- not configu
 DEFAULT_CHANNEL_ID = "8cr937k-450598"  # FridayOS-Dev
 
 
-def format_report(branches, deletions=None):
+def format_merged(merged):
+    """One section for the branches merged.py deleted: their work was already in the
+    default branch, so they are listed by name only, with how the work got there."""
+    if not merged or not (merged["deleted"] or merged["failed"]):
+        return []
+    base = merged.get("default_branch", "the default branch")
+    lines = []
+    if merged["deleted"]:
+        verb = "Would delete (dry run)" if merged.get("dry_run") else "Deleted"
+        lines += [f"**🧹 {verb}: {len(merged['deleted'])} branch(es) already in `{base}`**", ""]
+        lines += [f"- `{b['branch']}` ({b['how']}, last commit by {b['last_activity_by']}, {b['age_days']}d ago)"
+                  for b in merged["deleted"]]
+        lines += ["", "Nothing is lost: their work is in the default branch. A branch that had a PR keeps "
+                  "its commits at the PR's `refs/pull/<n>/head`.", ""]
+    if merged["failed"]:
+        lines += ["**⚠️ Merged, not deleted this run (see the run log); tried again next week**", ""]
+        lines += [f"- `{b['branch']}`: {b['error']}" for b in merged["failed"]]
+        lines.append("")
+    return lines
+
+
+def format_report(branches, deletions=None, merged=None):
     # GITHUB_REPOSITORY is "owner/repo"; show just the repo name so a channel
     # receiving reports from several repos can tell them apart.
     repo = os.environ.get("GITHUB_REPOSITORY", "").split("/")[-1]
@@ -52,7 +74,11 @@ def format_report(branches, deletions=None):
     escalate_days = os.environ.get("ESCALATE_DAYS") or "60"
     delete_days = os.environ.get("DELETE_DAYS") or "70"
 
+    merged_lines = format_merged(merged)
     if not branches:
+        if merged_lines:
+            return "\n".join([f"**Weekly branch report{suffix}**", "", *merged_lines,
+                              "✅ No stale branches this week.", "", "*Sent from FridayOS*"])
         return f"✅ No stale branches this week{suffix}.\n\n*Sent from FridayOS*"
 
     deletions = deletions or {"deleted": [], "failed": [], "announced": []}
@@ -67,7 +93,7 @@ def format_report(branches, deletions=None):
     escalate = [b for b in branches if b["tier"] == "escalate" and not b.get("kept")]
     stale = [b for b in branches if b["tier"] == "stale" and not b.get("kept")]
 
-    lines = [f"**Weekly stale-branch report{suffix}**", ""]
+    lines = [f"**Weekly stale-branch report{suffix}**", "", *merged_lines]
 
     def render_section(title, rows, footer=None):
         out = [f"**{title}**", ""]
@@ -145,17 +171,26 @@ def post(content, token, channel_id):
 
 
 def main():
-    if len(sys.argv) not in (2, 3):
-        sys.exit("usage: report.py <stale_branches.json> [deletions.json]")
+    args = sys.argv[1:]
+    merged = None
+    if "--merged" in args:
+        i = args.index("--merged")
+        if i + 1 >= len(args):
+            sys.exit("usage: report.py <stale_branches.json> [deletions.json] [--merged merged.json]")
+        with open(args[i + 1]) as f:
+            merged = json.load(f)
+        del args[i:i + 2]
+    if len(args) not in (1, 2):
+        sys.exit("usage: report.py <stale_branches.json> [deletions.json] [--merged merged.json]")
 
-    with open(sys.argv[1]) as f:
+    with open(args[0]) as f:
         branches = json.load(f)
     deletions = None
-    if len(sys.argv) == 3:
-        with open(sys.argv[2]) as f:
+    if len(args) == 2:
+        with open(args[1]) as f:
             deletions = json.load(f)
 
-    content = format_report(branches, deletions)
+    content = format_report(branches, deletions, merged)
     dry_run = os.environ.get("DRY_RUN", "false").lower() == "true"
 
     if dry_run:

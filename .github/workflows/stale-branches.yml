@@ -2,9 +2,15 @@ name: Stale Branch Report
 
 # Reusable workflow (org-wide): scans the calling repo's remote branches for
 # stale/abandoned work and posts a weekly report to FridayOS-Dev on ClickUp.
-# Merged branches are excluded here on purpose; they're handled separately by
-# each repo's native auto-delete-on-merge setting + the one-time backfill
-# sweep, not by this job.
+#
+# Merged branches: a caller with deletion on (delete_days > 0) also deletes,
+# on every run, each branch whose work is already in the default branch
+# (scripts/stale_branches/merged.py). GitHub's delete-on-merge removes only the
+# head branch of the PR that merged; a branch stacked under another PR or carried
+# into dev by a Preview-train PR stays behind, and on 9 Nov 2026 that left 856
+# merged branches across the org (fridayos-hub 01-features/platform/research/
+# 2026-11-09-origin-branch-prune-audit). With the weekly schedule, a merged
+# branch is gone within a week. Pass delete_merged: false to turn it off.
 #
 # Deletion (off unless the caller passes delete_days > 0): an unmerged branch
 # idle for delete_days with no open PR is announced in the report as "deleted
@@ -76,6 +82,14 @@ on:
         description: 'ClickUp channel id to post the report to'
         type: string
         default: "8cr937k-450598"  # FridayOS-Dev
+      delete_merged:
+        description: 'With delete_days > 0, also delete every branch whose work is already in the default branch (merged.py). No notice run: nothing is lost.'
+        type: boolean
+        default: true
+      merged_grace_days:
+        description: 'A merged branch is left alone until its last commit is this many days old, so a branch just cut from the default branch is not swept.'
+        type: number
+        default: 1
       dry_run:
         type: boolean
         default: false
@@ -135,6 +149,19 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: python .stale-branches-tooling/scripts/stale_branches/prune.py stale_branches.json > deletions.json
 
+      - name: Delete branches already in the default branch
+        if: ${{ inputs.delete_days > 0 && inputs.delete_merged }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MERGED_GRACE_DAYS: ${{ inputs.merged_grace_days }}
+          PROTECTED_GLOBS: ${{ inputs.protected_globs }}
+          KEEP_GLOBS: ${{ inputs.keep_globs }}
+        run: |
+          prior=()
+          if [ -f deletions.json ]; then prior=(deletions.json); fi
+          python .stale-branches-tooling/scripts/stale_branches/merged.py "${prior[@]}" > merged.json
+
       - name: Build + deliver report
         # Explicit bash adds pipefail, so a failed ClickUp post fails the run
         # instead of being masked by tee. The next run treats only a successful
@@ -148,9 +175,10 @@ jobs:
           ESCALATE_DAYS: ${{ inputs.escalate_days }}
           DELETE_DAYS: ${{ inputs.delete_days }}
         run: |
-          deletions=()
-          if [ -f deletions.json ]; then deletions=(deletions.json); fi
-          python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json "${deletions[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          args=()
+          if [ -f deletions.json ]; then args+=(deletions.json); fi
+          if [ -f merged.json ]; then args+=(--merged merged.json); fi
+          python .stale-branches-tooling/scripts/stale_branches/report.py stale_branches.json "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save this run's announcement for the next run
         if: ${{ inputs.delete_days > 0 && !inputs.dry_run }}
